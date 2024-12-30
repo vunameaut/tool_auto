@@ -6,6 +6,7 @@ import time
 import threading
 import traceback
 from pynput.mouse import Listener
+from pynput.keyboard import Listener as KeyboardListener, Key, KeyCode
 
 # Tắt tính năng mouseInfo và failsafe
 pyautogui.FAILSAFE = False
@@ -16,6 +17,9 @@ actions = []
 is_recording = False
 is_replaying = False
 start_time = 0
+
+# Hàm dừng phát lại
+stop_replay_event = threading.Event()
 
 def validate_actions(actions):
     """Kiểm tra tính hợp lệ của danh sách hành động."""
@@ -130,7 +134,7 @@ def load_actions():
 
 def replay_actions(root):
     """Phát lại các hành động đã ghi."""
-    global actions, is_replaying
+    global actions, is_replaying, stop_replay_event
     try:
         if not actions:
             messagebox.showwarning("Phát Lại", "Không có hành động nào để phát lại.")
@@ -152,22 +156,24 @@ def replay_actions(root):
         if repeat <= 0:
             return
 
+        stop_replay_event.clear()
+
         def replay():
             global is_replaying
             is_replaying = True
             messagebox.showinfo("Phát Lại", "Bắt đầu phát lại.")
 
             for _ in range(repeat):
-                if not is_replaying:
+                if stop_replay_event.is_set():
                     break
 
                 start_time = time.time()
                 for action in actions:
-                    if not is_replaying:
+                    if stop_replay_event.is_set():
                         break
 
                     try:
-                        while time.time() - start_time < action["time"] and is_replaying:
+                        while time.time() - start_time < action["time"] and not stop_replay_event.is_set():
                             time.sleep(0.01)
 
                         if action["type"] == "click":
@@ -187,6 +193,30 @@ def replay_actions(root):
     except Exception as e:
         print(f"Lỗi khi phát lại hành động: {e}")
         print(traceback.format_exc())
+
+def stop_replay():
+    """Dừng phát lại khẩn cấp."""
+    global stop_replay_event
+    stop_replay_event.set()
+    print("Đã dừng phát lại khẩn cấp.")
+
+def listen_for_hotkey():
+    """Lắng nghe tổ hợp phím Ctrl + F10 để dừng phát lại."""
+    def on_press(key):
+        if key == Key.f10 and any(k == Key.ctrl for k in pressed_keys):
+            stop_replay()
+
+    pressed_keys = set()
+
+    def on_key_press(key):
+        pressed_keys.add(key)
+        on_press(key)
+
+    def on_key_release(key):
+        pressed_keys.discard(key)
+
+    with KeyboardListener(on_press=on_key_press, on_release=on_key_release) as listener:
+        listener.join()
 
 def main():
     """Giao diện main."""
@@ -226,6 +256,12 @@ def main():
         btn_replay = tk.Button(replay_frame, text="Phát Lại Hành Động",
                                command=lambda: threading.Thread(target=replay_actions, args=(root,)).start())
         btn_replay.pack()
+
+        btn_stop_replay = tk.Button(replay_frame, text="Dừng Phát Lại", command=stop_replay)
+        btn_stop_replay.pack(pady=5)
+
+        # Chạy luồng lắng nghe hotkey
+        threading.Thread(target=listen_for_hotkey, daemon=True).start()
 
         root.mainloop()
     except Exception as e:
