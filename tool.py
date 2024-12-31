@@ -5,21 +5,33 @@ import json
 import time
 import threading
 import traceback
-from pynput.mouse import Listener
+from pynput.mouse import Listener, Button
 from pynput.keyboard import Listener as KeyboardListener, Key, KeyCode
+import numpy as np
 
-# Tắt tính năng mouseInfo và failsafe
+# Tắt tính năng failsafe
 pyautogui.FAILSAFE = False
-pyautogui.PAUSE = 0.1
+pyautogui.PAUSE = 0.005
 
 # Biến toàn cục
 actions = []
 is_recording = False
 is_replaying = False
 start_time = 0
-
-# Hàm dừng phát lại
+last_position = None
+is_dragging = False
+last_recorded_time = 0
 stop_replay_event = threading.Event()
+
+
+def interpolate_positions(start_pos, end_pos, steps):
+    """Tạo các điểm trung gian giữa hai vị trí."""
+    if not start_pos or not end_pos:
+        return []
+    x = np.linspace(start_pos[0], end_pos[0], steps)
+    y = np.linspace(start_pos[1], end_pos[1], steps)
+    return list(zip(x, y))
+
 
 def validate_actions(actions):
     """Kiểm tra tính hợp lệ của danh sách hành động."""
@@ -27,46 +39,100 @@ def validate_actions(actions):
         if not isinstance(actions, list):
             return False
         for action in actions:
-            required_keys = ["time", "type", "x", "y", "button"]
+            required_keys = ["time", "type"]
             if not all(key in action for key in required_keys):
                 return False
             if not isinstance(action["time"], (int, float)):
                 return False
-            if action["type"] not in ["click", "drag"]:
+            if action["type"] not in ["click", "drag", "scroll", "release"]:
                 return False
-            if not isinstance(action["x"], (int, float)) or not isinstance(action["y"], (int, float)):
+            if action["type"] != "release" and not all(key in action for key in ["x", "y"]):
+                return False
+            if action["type"] in ["click", "drag", "release"] and "button" not in action:
+                return False
+            if action["type"] == "scroll" and "dx" not in action and "dy" not in action:
                 return False
         return True
     except Exception:
         return False
 
+
+def on_move(x, y):
+    """Xử lý sự kiện di chuyển chuột."""
+    global actions, is_recording, start_time, last_position, is_dragging
+    if is_recording and is_dragging:
+        current_time = time.time() - start_time
+        action = {
+            "time": current_time,
+            "type": "drag",
+            "x": x,
+            "y": y,
+            "button": "left"
+        }
+        actions.append(action)
+        print(f"Đã ghi lại hành động kéo: {action}")
+        last_position = (x, y)
+
+
 def on_click(x, y, button, pressed):
-    """Xử lý sự kiện chuột khi nhấn hoặc thả."""
-    global actions, is_recording, start_time
+    """Xử lý sự kiện click chuột."""
+    global actions, is_recording, start_time, is_dragging
     if is_recording:
-        if pressed:  # Chỉ ghi lại khi chuột được nhấn
+        current_time = time.time() - start_time
+        if pressed:
+            is_dragging = True
             action = {
-                "time": time.time() - start_time,
+                "time": current_time,
                 "type": "click",
                 "x": x,
                 "y": y,
                 "button": str(button)
             }
-            print(f"Đã ghi lại hành động: {action}")
-            actions.append(action)
+        else:
+            is_dragging = False
+            action = {
+                "time": current_time,
+                "type": "release",
+                "button": str(button)
+            }
+        actions.append(action)
+        print(f"Đã ghi lại hành động click: {action}")
+
+
+def on_scroll(x, y, dx, dy):
+    """Xử lý sự kiện lăn chuột."""
+    global actions, is_recording, start_time
+    if is_recording:
+        current_time = time.time() - start_time
+        action = {
+            "time": current_time,
+            "type": "scroll",
+            "x": x,
+            "y": y,
+            "dx": dx,
+            "dy": dy
+        }
+        actions.append(action)
+        print(f"Đã ghi lại hành động lăn: {action}")
+
 
 def record_actions():
     """Bắt đầu ghi hành động."""
-    global is_recording, actions, start_time
+    global is_recording, actions, start_time, last_position, is_dragging
     try:
         is_recording = True
         actions = []
         start_time = time.time()
+        last_position = None
+        is_dragging = False
         print("Bắt đầu ghi hành động...")
         messagebox.showinfo("Ghi Hành Động", "Bắt đầu ghi sau khi bấm OK.")
 
-        # Khởi tạo Listener để ghi hành động chuột
-        mouse_listener = Listener(on_click=on_click)
+        mouse_listener = Listener(
+            on_move=on_move,
+            on_click=on_click,
+            on_scroll=on_scroll
+        )
         mouse_listener.start()
 
         def stop_listener():
@@ -79,6 +145,7 @@ def record_actions():
         print(f"Lỗi khi bắt đầu ghi: {e}")
         print(traceback.format_exc())
 
+
 def stop_recording():
     """Dừng ghi hành động."""
     global is_recording
@@ -89,6 +156,7 @@ def stop_recording():
     except Exception as e:
         print(f"Lỗi khi dừng ghi: {e}")
         print(traceback.format_exc())
+
 
 def save_actions():
     """Lưu hành động vào tệp JSON."""
@@ -109,6 +177,7 @@ def save_actions():
             messagebox.showinfo("Lưu", f"Đã lưu hành động thành công vào {filepath}!")
     except Exception as e:
         messagebox.showerror("Lỗi", f"Không thể lưu hành động: {str(e)}")
+
 
 def load_actions():
     """Tải hành động từ tệp JSON."""
@@ -131,6 +200,7 @@ def load_actions():
         messagebox.showerror("Lỗi", "Định dạng tập tin JSON không hợp lệ.")
     except Exception as e:
         messagebox.showerror("Lỗi", f"Không thể tải hành động: {str(e)}")
+
 
 def replay_actions(root):
     """Phát lại các hành động đã ghi."""
@@ -168,20 +238,53 @@ def replay_actions(root):
                     break
 
                 start_time = time.time()
+                mouse_down = False
+                last_pos = None
+
                 for action in actions:
                     if stop_replay_event.is_set():
                         break
 
-                    try:
-                        while time.time() - start_time < action["time"] and not stop_replay_event.is_set():
-                            time.sleep(0.01)
+                    current_time = time.time() - start_time
+                    wait_time = action["time"] - current_time
+                    if wait_time > 0:
+                        time.sleep(max(0, min(wait_time, 0.05)))
 
+                    try:
                         if action["type"] == "click":
-                            # Chuyển đổi nút chuột thành định dạng hợp lệ
                             button = action["button"].replace("Button.", "").lower()
-                            pyautogui.click(action["x"], action["y"], button=button)
+                            pyautogui.mouseDown(action["x"], action["y"], button=button)
+                            mouse_down = True
+                            last_pos = (action["x"], action["y"])
+
+                        elif action["type"] == "release":
+                            button = action["button"].replace("Button.", "").lower()
+                            pyautogui.mouseUp(button=button)
+                            mouse_down = False
+
                         elif action["type"] == "drag":
-                            pyautogui.dragTo(action["x"], action["y"])
+                            current_pos = (action["x"], action["y"])
+                            if last_pos:
+                                distance = ((current_pos[0] - last_pos[0]) ** 2 +
+                                            (current_pos[1] - last_pos[1]) ** 2) ** 0.5
+                                steps = max(2, min(20, int(distance / 10)))
+                                positions = interpolate_positions(last_pos, current_pos, steps)
+
+                                for pos in positions:
+                                    if stop_replay_event.is_set():
+                                        break
+                                    pyautogui.dragTo(pos[0], pos[1], duration=0.01)
+                            else:
+                                pyautogui.dragTo(action["x"], action["y"], duration=0.01)
+                            last_pos = current_pos
+
+                        elif action["type"] == "scroll":
+                            # Scroll theo chiều dọc
+                            pyautogui.scroll(int(action["dy"] * 120))
+                            # Scroll theo chiều ngang nếu có
+                            if action.get("dx", 0) != 0:
+                                pyautogui.hscroll(int(action["dx"] * 120))
+
                     except KeyError as e:
                         print(f"Lỗi: Dữ liệu không đầy đủ {e}. Bỏ qua hành động: {action}")
 
@@ -194,14 +297,17 @@ def replay_actions(root):
         print(f"Lỗi khi phát lại hành động: {e}")
         print(traceback.format_exc())
 
+
 def stop_replay():
     """Dừng phát lại khẩn cấp."""
     global stop_replay_event
     stop_replay_event.set()
     print("Đã dừng phát lại khẩn cấp.")
 
+
 def listen_for_hotkey():
     """Lắng nghe tổ hợp phím Ctrl + F10 để dừng phát lại."""
+
     def on_press(key):
         if key == Key.f10 and any(k == Key.ctrl for k in pressed_keys):
             stop_replay()
@@ -217,6 +323,7 @@ def listen_for_hotkey():
 
     with KeyboardListener(on_press=on_key_press, on_release=on_key_release) as listener:
         listener.join()
+
 
 def main():
     """Giao diện main."""
@@ -267,6 +374,7 @@ def main():
     except Exception as e:
         print(f"Lỗi trong giao diện main: {e}")
         print(traceback.format_exc())
+
 
 if __name__ == "__main__":
     main()
